@@ -1,0 +1,112 @@
+---
+title: "project_notes"
+author: "Christopher Stewart"
+date: "January 25, 2015"
+output: html_document
+---
+  
+## Introduction 
+This project addresses a sample machine learning problem: predicting correct / incorrect barbell lifts using personal activity data. 
+
+The present analysis uses data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants who performed barbell lifts correctly and incorrectly in 5 different ways.
+
+Initially, we download and inspect the data.
+
+## Loading and Preparing the Data for Exploratory Analysis
+
+```{r}
+require("downloader")
+require("caret")
+require("ggplot2")
+require("glmnet")
+dataset_url_train <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+dataset_url_test <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+download(dataset_url_train, dest = "training.csv")
+download(dataset_url_test, dest = "testing.csv")
+training = read.csv("training.csv", header = TRUE, na.strings = c("", "NA","#DIV/0!"))
+testing = read.csv("testing.csv")
+```
+
+## Exploratory Data Analysis and Data Cleaning
+
+A cursory examination of the training data reveals that it begins with an index varible and a series of timestamps. Because these are uninterpretable (timestamps) or not useful for model building (index variables), they are removed at the outset.
+
+We also see that a number of the potential covariates contain negligible amounts of actual data. We continue by removing variables that contain greater than 95% NAs, missing observations or #DIV/0!.
+
+
+```{r, echo=TRUE}
+vars2remove <- c(1, 3:5)
+varsNA <- which(colMeans(is.na(training)) > .95)
+training_clean <- training[, -c(vars2remove, varsNA)]
+```
+
+Next, we break the training set up into factor and non-factor variables to facilitate model building.
+
+```{r, echo=TRUE}
+varsFactor <-which(sapply(training_clean, FUN = class) == "factor")
+trainingFactor <- training_clean[, varsFactor]
+trainingNoFactor <- as.matrix(training_clean[, -varsFactor])
+```
+
+
+## Model Building
+
+For this multinomial classification problem, we choose the package "glmnet" which fits generalized linear models via penalized maximum likelihood. We choose an elastic net model (by specifying alpha = 0.5 in the function call) in order to achieve a compromise between ridge and lasso penalty approaches. 
+
+We first fit a model without cross validation, then plot this initial model for each level of the "classe" variable.
+
+
+```{r, echo=TRUE}
+eNet <-glmnet(x = trainingNoFactor, y = trainingFactor[, "classe"], 
+              family = "multinomial", alpha = 0.5)
+print(eNet)
+plot (eNet, label = TRUE)
+```
+
+In the plot, each curve shows the change in a single variable's coefficient compared to the whole coefficient vector at values of lambda. Across the levels of the "classe" variable, variables 6, 7 and 8 (gyros_belt_x, gyros_belt_y and gyros_belt_z) appear to have a large impact. 
+
+
+### Cross Validation
+
+In order to choose from the sequence of models with different lambda values provided by glmnet, we perform cross validation using the cv.glmnet function with misclassification error as the criterion for 5-fold procedure. 
+
+The lambda value that yields the minimum cross validation error is returned and depicted on a plot of the model's misclassification error between speckled bars. The very small error rate at the optimal lambda is a sign of the model's effectiveness. 
+
+
+```{r, echo=TRUE}
+eNet.cv <-cv.glmnet(x = trainingNoFactor, y = trainingFactor[, "classe"], 
+family = "multinomial", alpha = 0.5, nfolds = 5, type.measure = 
+"class")
+eNet.cv$lambda.min
+plot(eNet.cv)
+
+```
+
+
+## Prediction
+
+An estimate of the out of sample error resulting from this cross validation can be obtained by comparing values generated from the model with the actual observed values of the "classe" variable. A confusion matrix generated from this comparison shows an overall accuracy of 75.12% with a Kappa of 0.6845. 
+
+
+```{r, echo=TRUE}
+sample.error <- predict(eNet.cv, newx = trainingNoFactor, type = "class", s = "lambda.min")
+confMat <-confusionMatrix(sample.error, trainingFactor$classe)
+print(confMat)
+```
+
+
+At this point, we are ready to predict the classes for the actual testing data. First, we perform the same operations on the testing data that were performed on the training data. 
+
+
+```{r, echo=TRUE}
+vars2remove <- c(1, 3:5)
+varsNA <- which(colMeans(is.na(testing)) > .95)
+testing_clean <- testing[, -c(vars2remove, varsNA)]
+
+testing_clean$problem_id <- factor(testing_clean$problem_id)
+varsFactor <-which(sapply(testing_clean, FUN = class) == "factor")
+testingFactor <- testing_clean[, varsFactor]
+testingNoFactor <- data.matrix(testing_clean[, -varsFactor])
+
+answers <- predict(eNet.cv, newx = testingNoFactor, type = "class", s = "lambda.min")
+```
